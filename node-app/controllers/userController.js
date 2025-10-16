@@ -1,119 +1,96 @@
-const mongoose = require('mongoose');
-var jwt = require('jsonwebtoken');
+/**
+ * User Interaction Controller - Handles user-specific interactions
+ * 
+ * This controller manages:
+ * - Liking and unliking products
+ * - Retrieving a user's liked products
+ */
 
-const Users = mongoose.model('Users', {
-    username: String,
-    mobile: String,
-    email: String,
-    password: String,
-    likedProducts: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Products' }]
-});
+const User = require('../models/User');
+const Product = require('../models/Product');
 
-module.exports.likeProducts = (req, res) => {
-    let productId = req.body.productId;
-    let userId = req.body.userId;
+/**
+ * Toggle Product Like
+ * POST /api/like-product
+ * 
+ * Adds or removes a product from a user's liked products list
+ * and updates the product's likes count.
+ */
+const likeProducts = async (req, res) => {
+  try {
+    const { productId } = req.body;
+    const userId = req.user.userId; // Authenticated user ID from middleware
 
-    Users.updateOne({ _id: userId }, { $addToSet: { likedProducts: productId } })
-        .then(() => {
-            res.send({ message: 'liked success.' })
-        })
-        .catch(() => {
-            res.send({ message: 'server err' })
-        })
+    // Find user and product
+    const user = await User.findById(userId);
+    const product = await Product.findById(productId);
 
-}
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    if (!product) {
+      return res.status(404).json({ success: false, message: 'Product not found' });
+    }
 
-module.exports.signup = (req, res) => {
-    const username = req.body.username;
-    const password = req.body.password;
-    const email = req.body.email;
-    const mobile = req.body.mobile;
-    const user = new Users({ username: username, password: password, email, mobile });
-    user.save()
-        .then(() => {
-            res.send({ message: 'saved success.' })
-        })
-        .catch(() => {
-            res.send({ message: 'server err' })
-        })
+    const isLiked = user.likedProducts.includes(productId);
 
-}
+    if (isLiked) {
+      // Unlike product
+      user.likedProducts.pull(productId);
+      await product.decrementLikes();
+      await user.save();
+      res.json({ success: true, message: 'Product unliked successfully', data: { isLiked: false } });
+    } else {
+      // Like product
+      user.likedProducts.push(productId);
+      await product.incrementLikes();
+      await user.save();
+      res.json({ success: true, message: 'Product liked successfully', data: { isLiked: true } });
+    }
 
-module.exports.myProfileById = (req, res) => {
-    let uid = req.params.userId
+  } catch (error) {
+    console.error('Toggle like product error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Something went wrong'
+    });
+  }
+};
 
-    Users.findOne({ _id: uid })
-        .then((result) => {
-            res.send({
-                message: 'success.', user: {
-                    email: result.email,
-                    mobile: result.mobile,
-                    username: result.username
-                }
-            })
-        })
-        .catch(() => {
-            res.send({ message: 'server err' })
-        })
+/**
+ * Get Liked Products
+ * POST /api/liked-products
+ * 
+ * Retrieves all products liked by the authenticated user
+ */
+const likedProducts = async (req, res) => {
+  try {
+    const userId = req.user.userId; // Authenticated user ID from middleware
 
-    return;
+    const user = await User.findById(userId).populate('likedProducts');
 
-}
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
 
-module.exports.getUserById = (req, res) => {
-    const _userId = req.params.uId;
-    Users.findOne({ _id: _userId })
-        .then((result) => {
-            res.send({
-                message: 'success.', user: {
-                    email: result.email,
-                    mobile: result.mobile,
-                    username: result.username
-                }
-            })
-        })
-        .catch(() => {
-            res.send({ message: 'server err' })
-        })
-}
+    res.json({
+      success: true,
+      message: 'Liked products retrieved successfully',
+      data: { products: user.likedProducts }
+    });
 
+  } catch (error) {
+    console.error('Get liked products error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Something went wrong'
+    });
+  }
+};
 
-module.exports.login = (req, res) => {
-    const username = req.body.username;
-    const password = req.body.password;
-
-    Users.findOne({ username: username })
-        .then((result) => {
-            if (!result) {
-                res.send({ message: 'user not found.' })
-            } else {
-                if (result.password == password) {
-                    const token = jwt.sign({
-                        data: result
-                    }, 'MYKEY', { expiresIn: '1h' });
-                    res.send({ message: 'find success.', token: token, userId: result._id })
-                }
-                if (result.password != password) {
-                    res.send({ message: 'password wrong.' })
-                }
-
-            }
-
-        })
-        .catch(() => {
-            res.send({ message: 'server err' })
-        })
-
-}
-
-module.exports.likedProducts = (req, res) => {
-
-    Users.findOne({ _id: req.body.userId }).populate('likedProducts')
-        .then((result) => {
-            res.send({ message: 'success', products: result.likedProducts })
-        })
-        .catch((err) => {
-            res.send({ message: 'server err' })
-        })
-
-}
+module.exports = {
+  likeProducts,
+  likedProducts
+};

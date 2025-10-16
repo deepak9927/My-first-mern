@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+  # Backend API Service
+  backend:
+    build:
+      context: ./node-app
+      dockerfile: Dockerfile
+    container_name: mern-backend
+    ports:
+      - "5000:5000"
+    environment:
+      - NODE_ENV=production
+      - PORT=5000
+      - MONGODB_URI=${MONGODB_URI}
+      - JWT_SECRET=${JWT_SECRET}
+      - FRONTEND_URL=http://localhost:3000
+    restart: unless-stopped
+    networks:
+      - mern-network
+
+  # Frontend React Service
+  frontend:
+    build:
+      context: ./react-app
+      dockerfile: Dockerfile
+    container_name: mern-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - mern-network
+
+networks:
+  mern-network:
+    driver: bridge
