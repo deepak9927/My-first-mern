@@ -14,7 +14,7 @@ services:
       - PORT=5000
       - MONGODB_URI=${MONGODB_URI}
       - JWT_SECRET=${JWT_SECRET}
-      - FRONTEND_URL=http://localhost:3000
+      - FRONTEND_URL=${FRONTEND_URL}
     restart: unless-stopped
     networks:
       - mern-network

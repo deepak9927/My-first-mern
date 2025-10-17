@@ -1,9 +1,9 @@
 #!/bin/bash
 
 # Azure Quick Deploy Script
-# This script automates the Azure deployment process
+# This script automates the Azure deployment process for a Dockerized MERN stack
 
-echo "🚀 MERN App - Azure Quick Deploy"
+echo "🚀 MERN App - Azure Quick Deploy (Dockerized)"
 echo "================================="
 echo ""
 
@@ -18,17 +18,20 @@ NC='\033[0m'
 RESOURCE_GROUP="mern-app-rg"
 LOCATION="eastus"
 APP_SERVICE_PLAN="mern-plan"
-# Default to Free tier to save your $100 credit; change to B1 later if needed
-SKU="F1"
+SKU="B1" # Changed to B1 for Docker support, F1 does not support custom containers
+ACR_NAME="mernappacr$(head /dev/urandom | tr -dc a-z0-9 | head -c 5)" # Unique ACR name
 
 echo -e "${BLUE}This script will:${NC}"
 echo "  1. Create Azure resource group"
-echo "  2. Create App Service Plan ($SKU tier)"
-echo "  3. Deploy your backend (Azure App Service Linux)"
-echo "  4. Deploy your frontend (Azure App Service Linux)"
+echo "  2. Create Azure Container Registry (ACR)"
+echo "  3. Create App Service Plan ($SKU tier)"
+echo "  4. Build and push Docker images to ACR"
+echo "  5. Deploy your backend (Azure App Service Linux with Docker)"
+echo "  6. Deploy your frontend (Azure App Service Linux with Docker)"
 echo ""
 echo -e "${YELLOW}Required:${NC}"
 echo "  - Azure CLI installed and logged in"
+echo "  - Docker installed and running"
 echo "  - MongoDB Atlas (or Cosmos DB Mongo) connection string"
 echo "  - Unique app names (will prompt)"
 echo ""
@@ -45,6 +48,13 @@ if ! command -v az &> /dev/null; then
     exit 1
 fi
 
+# Check if Docker is installed
+if ! command -v docker &> /dev/null; then
+    echo -e "${RED}❌ Docker is not installed or not running.${NC}"
+    echo "Install from: https://docs.docker.com/get-docker/"
+    exit 1
+fi
+
 # Check if logged in
 az account show &> /dev/null
 if [ $? -ne 0 ]; then
@@ -54,6 +64,7 @@ fi
 
 echo ""
 echo -e "${GREEN}✓ Azure CLI ready${NC}"
+echo -e "${GREEN}✓ Docker ready${NC}"
 echo ""
 
 # Get user inputs (allow env var overrides for non-interactive mode)
@@ -90,9 +101,10 @@ echo ""
 echo -e "${BLUE}Configuration:${NC}"
 echo "  Resource Group: $RESOURCE_GROUP"
 echo "  Location: $LOCATION"
-echo "  Plan: $APP_SERVICE_PLAN ($SKU)"
-echo "  Backend: $BACKEND_NAME"
-echo "  Frontend: $FRONTEND_NAME"
+echo "  App Service Plan: $APP_SERVICE_PLAN ($SKU)"
+echo "  Azure Container Registry: $ACR_NAME"
+echo "  Backend App Name: $BACKEND_NAME"
+echo "  Frontend App Name: $FRONTEND_NAME"
 echo ""
 
 if [ "${NON_INTERACTIVE}" = "1" ]; then
@@ -111,6 +123,18 @@ echo -e "${YELLOW}Creating resource group...${NC}"
 az group create --name $RESOURCE_GROUP --location $LOCATION
 echo -e "${GREEN}✓ Resource group created${NC}"
 
+# Create Azure Container Registry
+echo ""
+echo -e "${YELLOW}Creating Azure Container Registry ($ACR_NAME)...${NC}"
+az acr create --resource-group $RESOURCE_GROUP --name $ACR_NAME --sku Basic --admin-enabled true
+echo -e "${GREEN}✓ ACR created${NC}"
+
+# Log in to ACR
+echo ""
+echo -e "${YELLOW}Logging in to Azure Container Registry...${NC}"
+az acr login --name $ACR_NAME
+echo -e "${GREEN}✓ Logged in to ACR${NC}"
+
 # Create App Service Plan
 echo ""
 echo -e "${YELLOW}Creating App Service Plan...${NC}"
@@ -121,14 +145,21 @@ az appservice plan create \
   --is-linux
 echo -e "${GREEN}✓ App Service Plan created${NC}"
 
+# Build and push Backend Docker image
+echo ""
+echo -e "${YELLOW}Building and pushing backend Docker image...${NC}"
+docker build -t ${ACR_NAME}.azurecr.io/${BACKEND_NAME}:latest ./node-app
+docker push ${ACR_NAME}.azurecr.io/${BACKEND_NAME}:latest
+echo -e "${GREEN}✓ Backend Docker image pushed to ACR${NC}"
+
 # Deploy Backend
 echo ""
-echo -e "${YELLOW}Creating backend web app...${NC}"
+echo -e "${YELLOW}Creating backend web app from Docker image...${NC}"
 az webapp create \
   --resource-group $RESOURCE_GROUP \
   --plan $APP_SERVICE_PLAN \
   --name $BACKEND_NAME \
-  --runtime "NODE:18-lts"
+  --deployment-container-image-name ${ACR_NAME}.azurecr.io/${BACKEND_NAME}:latest
 
 echo -e "${YELLOW}Setting backend environment variables...${NC}"
 az webapp config appsettings set \
@@ -138,46 +169,40 @@ az webapp config appsettings set \
     NODE_ENV=production \
     MONGODB_URI="$MONGODB_URI" \
     JWT_SECRET="$JWT_SECRET" \
-    FRONTEND_URL="$FRONTEND_URL"
+    FRONTEND_URL="$FRONTEND_URL" \
+    PORT=5000 # Ensure the backend listens on the correct port
 
-echo -e "${YELLOW}Deploying backend code...${NC}"
-cd node-app
-zip -r ../backend.zip . -x "node_modules/*" ".env"
-cd ..
-az webapp deployment source config-zip \
-  --resource-group $RESOURCE_GROUP \
-  --name $BACKEND_NAME \
-  --src backend.zip
-rm backend.zip
 echo -e "${GREEN}✓ Backend deployed${NC}"
+
+# Build and push Frontend Docker image
+echo ""
+echo -e "${YELLOW}Building and pushing frontend Docker image...${NC}"
+# Ensure REACT_APP_API_URL is set during frontend build for production
+# This needs to be done before building the image
+echo "REACT_APP_API_URL=$BACKEND_URL" > react-app/.env.production
+docker build -t ${ACR_NAME}.azurecr.io/${FRONTEND_NAME}:latest ./react-app
+docker push ${ACR_NAME}.azurecr.io/${FRONTEND_NAME}:latest
+rm react-app/.env.production # Clean up temporary .env file
+echo -e "${GREEN}✓ Frontend Docker image pushed to ACR${NC}"
 
 # Deploy Frontend
 echo ""
-echo -e "${YELLOW}Preparing frontend...${NC}"
-echo "REACT_APP_API_URL=$BACKEND_URL" > react-app/.env.production
-
-echo -e "${YELLOW}Building frontend...${NC}"
-cd react-app
-npm install --legacy-peer-deps
-npm run build
-
-echo -e "${YELLOW}Creating frontend web app...${NC}"
-cd ..
+echo -e "${YELLOW}Creating frontend web app from Docker image...${NC}"
 az webapp create \
   --resource-group $RESOURCE_GROUP \
   --plan $APP_SERVICE_PLAN \
   --name $FRONTEND_NAME \
-  --runtime "NODE:18-lts"
+  --deployment-container-image-name ${ACR_NAME}.azurecr.io/${FRONTEND_NAME}:latest
 
-echo -e "${YELLOW}Deploying frontend...${NC}"
-cd react-app/build
-zip -r ../../frontend.zip .
-cd ../..
-az webapp deployment source config-zip \
+echo -e "${YELLOW}Setting frontend environment variables (if any, e.g., for Nginx config)...${NC}"
+# No specific environment variables needed for Nginx serving static files,
+# but keeping this block for completeness if future needs arise.
+az webapp config appsettings set \
   --resource-group $RESOURCE_GROUP \
   --name $FRONTEND_NAME \
-  --src frontend.zip
-rm frontend.zip
+  --settings \
+    WEBSITES_PORT=80 # Nginx listens on port 80
+
 echo -e "${GREEN}✓ Frontend deployed${NC}"
 
 # Summary
